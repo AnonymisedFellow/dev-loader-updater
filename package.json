@@ -1,0 +1,17 @@
+{
+  "name": "@workflow/plugin-loader",
+  "version": "0.1.1",
+  "private": true,
+  "license": "MIT",
+  "type": "module",
+  "scripts": {
+    "build": "node ./esbuild.cjs",
+    "watch": "node ./esbuild.cjs --watch"
+  },
+  "dependencies": {
+    "obsidian": "1.8.7"
+  },
+  "devDependencies": {
+    "esbuild": "^0.24.0"
+  }
+}

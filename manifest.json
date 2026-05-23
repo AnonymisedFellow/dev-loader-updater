@@ -1,0 +1,10 @@
+{
+  "id": "plugin-loader",
+  "name": "Loader",
+  "version": "0.1.1",
+  "minAppVersion": "1.5.0",
+  "description": "Install and update private plugins from self-hosted endpoints with fallback transport support.",
+  "author": "AF",
+  "authorUrl": "",
+  "isDesktopOnly": false
+}
