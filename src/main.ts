@@ -75,7 +75,7 @@ export default class PluginLoaderPlugin extends Plugin {
     await this.loadSettings();
 
     this.addCommand({
-      id: 'plugin-loader-install-or-update-all',
+      id: 'dev-loader-updater-install-or-update-all',
       name: 'Install or update all configured plugin sources',
       callback: async () => {
         await this.installOrUpdateAll(true);
@@ -83,7 +83,7 @@ export default class PluginLoaderPlugin extends Plugin {
     });
 
     this.addCommand({
-      id: 'plugin-loader-check-updates',
+      id: 'dev-loader-updater-check-updates',
       name: 'Check all configured plugin sources for updates',
       callback: async () => {
         await this.checkForUpdates(false);
@@ -132,7 +132,7 @@ export default class PluginLoaderPlugin extends Plugin {
         );
 
         if (!confirmed) {
-          new Notice(`Plugin Loader: skipped ${source.displayName}`);
+          new Notice(`Dev Loader Updater: skipped ${source.displayName}`);
           return false;
         }
       }
@@ -141,12 +141,12 @@ export default class PluginLoaderPlugin extends Plugin {
       await this.tryEnablePlugin(source.pluginId);
 
       new Notice(
-        `Plugin Loader: installed ${source.displayName} (${remoteVersion}) from ${remote.endpoint}`,
+        `Dev Loader Updater: installed ${source.displayName} (${remoteVersion}) from ${remote.endpoint}`,
       );
       return true;
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error);
-      new Notice(`Plugin Loader: failed ${source.displayName} - ${reason}`);
+      new Notice(`Dev Loader Updater: failed ${source.displayName} - ${reason}`);
       return false;
     }
   }
@@ -158,13 +158,13 @@ export default class PluginLoaderPlugin extends Plugin {
   async installOrUpdateAll(askBeforeInstall: boolean): Promise<void> {
     const enabledSources = this.settings.sources.filter((source) => source.enabled);
     if (enabledSources.length === 0) {
-      new Notice('Plugin Loader: no enabled sources configured');
+      new Notice('Dev Loader Updater: no enabled sources configured');
       return;
     }
 
     for (const source of enabledSources) {
       if (!source.pluginId.trim()) {
-        new Notice(`Plugin Loader: source ${source.displayName} is missing plugin id`);
+        new Notice(`Dev Loader Updater: source ${source.displayName} is missing plugin id`);
         continue;
       }
       await this.installOrUpdateSource(source, askBeforeInstall);
@@ -193,7 +193,7 @@ export default class PluginLoaderPlugin extends Plugin {
 
         if (!localManifest) {
           new Notice(
-            `Plugin Loader: ${source.displayName} is not installed locally. Run install command to add it.`,
+            `Dev Loader Updater: ${source.displayName} is not installed locally. Run install command to add it.`,
           );
           continue;
         }
@@ -210,17 +210,17 @@ export default class PluginLoaderPlugin extends Plugin {
         }
 
         new Notice(
-          `Plugin Loader: update available for ${source.displayName} (${localVersion} -> ${remoteVersion})`,
+          `Dev Loader Updater: update available for ${source.displayName} (${localVersion} -> ${remoteVersion})`,
           10000,
         );
       } catch (error) {
         const reason = error instanceof Error ? error.message : String(error);
-        new Notice(`Plugin Loader: update check failed for ${source.displayName} - ${reason}`);
+        new Notice(`Dev Loader Updater: update check failed for ${source.displayName} - ${reason}`);
       }
     }
 
     if (updatesFound === 0 && !silentWhenUpToDate) {
-      new Notice('Plugin Loader: all enabled sources are up to date');
+      new Notice('Dev Loader Updater: all enabled sources are up to date');
     }
   }
 
@@ -410,7 +410,7 @@ class PluginLoaderSettingsTab extends PluginSettingTab {
     const { containerEl } = this;
     containerEl.empty();
 
-    containerEl.createEl('h2', { text: 'Plugin Loader' });
+    containerEl.createEl('h2', { text: 'Dev Loader Updater' });
     containerEl.createEl('p', {
       text: 'Configure private plugin endpoints. Endpoints are tried in order for fallback (for example: Tailscale URL, LAN URL, then SSH URL).',
     });
@@ -589,10 +589,10 @@ class PluginLoaderSettingsTab extends PluginSettingTab {
         button.setButtonText('Test').onClick(async () => {
           try {
             const remote = await this.plugin.testSourceConnectivity(source);
-            new Notice(`Plugin Loader: ${source.displayName} reachable via ${remote.endpoint}`);
+            new Notice(`Dev Loader Updater: ${source.displayName} reachable via ${remote.endpoint}`);
           } catch (error) {
             const reason = error instanceof Error ? error.message : String(error);
-            new Notice(`Plugin Loader: test failed for ${source.displayName} - ${reason}`);
+            new Notice(`Dev Loader Updater: test failed for ${source.displayName} - ${reason}`);
           }
         }),
       )

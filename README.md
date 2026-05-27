@@ -1,6 +1,6 @@
-# Plugin Loader
+# Dev Loader Updater
 
-Plugin Loader is an Obsidian plugin that installs and updates private plugins from user-defined sources.
+Dev Loader Updater is an Obsidian plugin that installs and updates private plugins from user-defined sources.
 
 ## What It Does
 
@@ -10,7 +10,11 @@ Plugin Loader is an Obsidian plugin that installs and updates private plugins fr
 
 ## Why It Exists
 
-Plugin Loader exists to simplify private plugin distribution and maintenance without relying on the standard public plugin installation flow.
+Dev Loader Updater exists to simplify private plugin distribution and maintenance without relying on the standard public plugin installation flow.
+
+## Repository
+
+https://github.com/AnonymisedFellow/dev-loader-updater
 
 ## Developer Note
 

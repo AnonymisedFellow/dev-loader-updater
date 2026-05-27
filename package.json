@@ -1,9 +1,17 @@
 {
-  "name": "@workflow/plugin-loader",
+  "name": "@workflow/dev-loader-updater",
   "version": "0.1.1",
   "private": true,
   "license": "MIT",
   "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/AnonymisedFellow/dev-loader-updater.git"
+  },
+  "homepage": "https://github.com/AnonymisedFellow/dev-loader-updater",
+  "bugs": {
+    "url": "https://github.com/AnonymisedFellow/dev-loader-updater/issues"
+  },
   "scripts": {
     "build": "node ./esbuild.cjs",
     "watch": "node ./esbuild.cjs --watch"

@@ -1,9 +1,9 @@
 {
-  "id": "plugin-loader",
-  "name": "Loader",
+  "id": "dev-loader-updater",
+  "name": "Dev Loader Updater",
   "version": "0.1.1",
   "minAppVersion": "1.5.0",
-  "description": "Install and update private plugins from self-hosted endpoints with fallback transport support.",
+  "description": "Install and update private development plugins from user-defined endpoints with fallback transport support.",
   "author": "AF",
   "authorUrl": "",
   "isDesktopOnly": false
