@@ -24,21 +24,16 @@ __export(main_exports, {
 });
 module.exports = __toCommonJS(main_exports);
 var import_obsidian = require("obsidian");
-var import_node_child_process = require("node:child_process");
-var import_node_util = require("node:util");
-var execFileAsync = (0, import_node_util.promisify)(import_node_child_process.execFile);
 var DEFAULT_SOURCE = {
   id: createId(),
   pluginId: "",
   displayName: "New Source",
   endpoints: [],
-  manifestPath: "manifest.json",
-  mainPath: "main.js",
-  stylesPath: "styles.css",
-  branch: "main",
-  enabled: true,
-  authToken: ""
+  enabled: true
 };
+var MANIFEST_FILE_NAME = "manifest.json";
+var MAIN_FILE_NAME = "main.js";
+var STYLES_FILE_NAME = "styles.css";
 var DEFAULT_SETTINGS = {
   sources: [],
   checkOnStartup: true,
@@ -55,6 +50,29 @@ function getTailscaleEndpoint(source) {
 }
 function setVerifiedEndpoints(source, localNetworkEndpoint, tailscaleEndpoint) {
   source.endpoints = normalizeEndpointLines([localNetworkEndpoint.trim(), tailscaleEndpoint.trim()].join("\n")).slice(0, 2);
+}
+function normalizeSource(input) {
+  const id = typeof input?.id === "string" && input.id.trim() ? input.id.trim() : createId();
+  const pluginId = typeof input?.pluginId === "string" ? input.pluginId.trim() : "";
+  const displayName = typeof input?.displayName === "string" && input.displayName.trim() ? input.displayName.trim() : DEFAULT_SOURCE.displayName;
+  const endpoints = Array.isArray(input?.endpoints) ? input.endpoints.map((candidate) => typeof candidate === "string" ? candidate.trim() : "").filter(Boolean).slice(0, 2) : [];
+  const enabled = input?.enabled !== false;
+  return {
+    id,
+    pluginId,
+    displayName,
+    endpoints,
+    enabled
+  };
+}
+function normalizeSettings(loaded) {
+  return {
+    ...DEFAULT_SETTINGS,
+    ...loaded ?? {},
+    sources: (loaded?.sources ?? []).map((source) => normalizeSource(source)),
+    checkOnStartup: loaded?.checkOnStartup !== false,
+    autoInstallUpdates: loaded?.autoInstallUpdates === true
+  };
 }
 function hasCustomDisplayName(source) {
   return !!source.displayName.trim() && source.displayName.trim() !== DEFAULT_SOURCE.displayName;
@@ -124,17 +142,10 @@ var PluginLoaderPlugin = class extends import_obsidian.Plugin {
   }
   async loadSettings() {
     const loaded = await this.loadData();
-    this.settings = {
-      ...DEFAULT_SETTINGS,
-      ...loaded ?? {},
-      sources: (loaded?.sources ?? []).map((source) => ({
-        ...DEFAULT_SOURCE,
-        ...source,
-        id: source.id || createId()
-      }))
-    };
+    this.settings = normalizeSettings(loaded);
   }
   async saveSettings() {
+    this.settings = normalizeSettings(this.settings);
     await this.saveData(this.settings);
   }
   async syncSourceMetadata(source, manifest) {
@@ -243,35 +254,11 @@ var PluginLoaderPlugin = class extends import_obsidian.Plugin {
     const errors = [];
     for (const endpoint of endpoints) {
       try {
-        if (isSshEndpoint(endpoint)) {
-          if (import_obsidian.Platform.isMobile) {
-            throw new Error("SSH endpoints are desktop-only; put HTTP(S) endpoints first for mobile fallback");
-          }
-          const manifestText2 = await this.readSshFile(endpoint, source.manifestPath);
-          const manifest2 = parseManifest(manifestText2, source.pluginId);
-          if (manifestOnly) {
-            return {
-              endpoint,
-              manifest: manifest2,
-              mainJs: ""
-            };
-          }
-          const mainJs2 = await this.readSshFile(endpoint, source.mainPath);
-          let stylesCss2;
-          try {
-            stylesCss2 = await this.readSshFile(endpoint, source.stylesPath);
-          } catch {
-            stylesCss2 = void 0;
-          }
-          return {
-            endpoint,
-            manifest: manifest2,
-            mainJs: mainJs2,
-            ...stylesCss2 ? { stylesCss: stylesCss2 } : {}
-          };
+        const releaseAssets = await this.tryResolveLatestReleaseAssetUrls(endpoint);
+        if (!releaseAssets) {
+          throw new Error("endpoint must be a Gitea repository releases URL");
         }
-        const manifestUrl = joinUrl(endpoint, source.manifestPath);
-        const manifestText = await this.httpGetText(manifestUrl, source.authToken);
+        const manifestText = await this.httpGetText(releaseAssets.manifestUrl);
         const manifest = parseManifest(manifestText, source.pluginId);
         if (manifestOnly) {
           return {
@@ -280,13 +267,10 @@ var PluginLoaderPlugin = class extends import_obsidian.Plugin {
             mainJs: ""
           };
         }
-        const mainJsUrl = joinUrl(endpoint, source.mainPath);
-        const mainJs = await this.httpGetText(mainJsUrl, source.authToken);
+        const mainJs = await this.httpGetText(releaseAssets.mainJsUrl);
         let stylesCss;
-        try {
-          stylesCss = await this.httpGetText(joinUrl(endpoint, source.stylesPath), source.authToken);
-        } catch {
-          stylesCss = void 0;
+        if (releaseAssets.stylesCssUrl) {
+          stylesCss = await this.httpGetText(releaseAssets.stylesCssUrl);
         }
         return {
           endpoint,
@@ -299,17 +283,12 @@ var PluginLoaderPlugin = class extends import_obsidian.Plugin {
         errors.push(`${endpoint}: ${reason}`);
       }
     }
-    throw new Error(`all endpoints failed; ${errors.join(" | ")}`);
+    throw new Error(`all endpoints failed: ${errors.join(" | ")}`);
   }
-  async httpGetText(url, authToken) {
-    const headers = {};
-    if (authToken?.trim()) {
-      headers.Authorization = `token ${authToken.trim()}`;
-    }
+  async httpGetText(url) {
     const response = await (0, import_obsidian.requestUrl)({
       url,
       method: "GET",
-      headers,
       throw: false
     });
     if (response.status < 200 || response.status >= 300) {
@@ -317,21 +296,44 @@ var PluginLoaderPlugin = class extends import_obsidian.Plugin {
     }
     return response.text;
   }
-  async readSshFile(endpoint, relativeFilePath) {
-    const parsed = parseSshEndpoint(endpoint);
-    if (!parsed) {
-      throw new Error("invalid SSH endpoint format; expected ssh://user@host/absolute/path/to/plugin-dir");
+  async tryResolveLatestReleaseAssetUrls(endpoint) {
+    const apiUrl = deriveGiteaLatestReleaseApiUrl(endpoint);
+    if (!apiUrl) {
+      return null;
     }
-    const { userHost, remoteRootPath } = parsed;
-    const normalizedPath = relativeFilePath.replaceAll("\\", "/").replace(/^\/+/, "");
-    const remotePath = `${remoteRootPath.replace(/\/+$/, "")}/${normalizedPath}`;
-    const { stdout, stderr } = await execFileAsync("ssh", [userHost, `cat '${remotePath}'`], {
-      maxBuffer: 8 * 1024 * 1024
+    const response = await (0, import_obsidian.requestUrl)({
+      url: apiUrl,
+      method: "GET",
+      throw: false
     });
-    if (stderr?.trim()) {
-      throw new Error(stderr.trim());
+    if (response.status < 200 || response.status >= 300) {
+      return null;
     }
-    return typeof stdout === "string" ? stdout : stdout.toString("utf8");
+    const release = JSON.parse(response.text);
+    const assetsByName = /* @__PURE__ */ new Map();
+    for (const asset of release.assets ?? []) {
+      if (!asset?.name || !asset.browser_download_url) {
+        continue;
+      }
+      assetsByName.set(asset.name.toLowerCase(), asset.browser_download_url);
+    }
+    const manifestUrl = assetsByName.get(MANIFEST_FILE_NAME);
+    const mainJsUrl = assetsByName.get(MAIN_FILE_NAME);
+    if (!manifestUrl || !mainJsUrl) {
+      return null;
+    }
+    const stylesCssUrl = assetsByName.get(STYLES_FILE_NAME);
+    if (stylesCssUrl) {
+      return {
+        manifestUrl,
+        mainJsUrl,
+        stylesCssUrl
+      };
+    }
+    return {
+      manifestUrl,
+      mainJsUrl
+    };
   }
   async readInstalledManifest(pluginId) {
     const adapter = this.app.vault.adapter;
@@ -379,7 +381,7 @@ var PluginLoaderSettingsTab = class extends import_obsidian.PluginSettingTab {
     containerEl.empty();
     containerEl.createEl("h2", { text: "Dev Loader Updater" });
     containerEl.createEl("p", {
-      text: "Add the two verified release URLs for a private plugin: one local network URL and one Tailscale URL."
+      text: "Add two verified release URLs for a private plugin: one local network URL and one Tailscale URL."
     });
     containerEl.createEl("p", {
       text: "The loader reads the manifest, detects the plugin id automatically, and tries whichever verified URL works first."
@@ -440,14 +442,14 @@ var PluginLoaderSettingsTab = class extends import_obsidian.PluginSettingTab {
     new import_obsidian.Setting(containerEl).setName("Detected plugin id").setDesc("Read from the remote manifest after the first successful test, check, or install.").addText(
       (text) => text.setPlaceholder("Detected automatically").setValue(source.pluginId).setDisabled(true)
     );
-    new import_obsidian.Setting(containerEl).setName("Local network URL").setDesc("Verified path 1. Use the plugin release folder served on your local IP or LAN host.").addText(
-      (text) => text.setPlaceholder("http://192.168.x.x/path/to/plugin").setValue(getLocalNetworkEndpoint(source)).onChange(async (value) => {
+    new import_obsidian.Setting(containerEl).setName("Local network URL").setDesc("Verified path 1. Use the repository releases page URL on your local IP/LAN host.").addText(
+      (text) => text.setPlaceholder("http://192.168.x.x/.../releases").setValue(getLocalNetworkEndpoint(source)).onChange(async (value) => {
         setVerifiedEndpoints(source, value, getTailscaleEndpoint(source));
         await this.plugin.saveSettings();
       })
     );
-    new import_obsidian.Setting(containerEl).setName("Tailscale URL").setDesc("Verified path 2. Use the plugin release folder exposed through your Tailscale address.").addText(
-      (text) => text.setPlaceholder("https://host.tailnet/path/to/plugin").setValue(getTailscaleEndpoint(source)).onChange(async (value) => {
+    new import_obsidian.Setting(containerEl).setName("Tailscale URL").setDesc("Verified path 2. Use the repository releases page URL exposed through your Tailscale address.").addText(
+      (text) => text.setPlaceholder("https://host.tailnet/.../releases").setValue(getTailscaleEndpoint(source)).onChange(async (value) => {
         setVerifiedEndpoints(source, getLocalNetworkEndpoint(source), value);
         await this.plugin.saveSettings();
       })
@@ -554,29 +556,26 @@ function parseManifest(manifestText, expectedPluginId) {
   }
   return parsed;
 }
-function joinUrl(baseUrl, relativePath) {
-  const normalizedBase = baseUrl.replace(/\/+$/, "");
-  const normalizedPath = relativePath.replace(/^\/+/, "");
-  return `${normalizedBase}/${normalizedPath}`;
-}
-function isSshEndpoint(endpoint) {
-  return endpoint.startsWith("ssh://");
-}
-function parseSshEndpoint(endpoint) {
-  if (endpoint.startsWith("ssh://")) {
-    try {
-      const parsed = new URL(endpoint);
-      if (!parsed.username || !parsed.hostname) {
-        return null;
-      }
-      const userHost = `${parsed.username}@${parsed.hostname}`;
-      const remoteRootPath = parsed.pathname;
-      return remoteRootPath ? { userHost, remoteRootPath } : null;
-    } catch {
-      return null;
-    }
+function deriveGiteaLatestReleaseApiUrl(endpoint) {
+  let parsed;
+  try {
+    parsed = new URL(endpoint);
+  } catch {
+    return null;
   }
-  return null;
+  const pathSegments = parsed.pathname.split("/").filter(Boolean);
+  const releaseIndex = pathSegments.lastIndexOf("releases");
+  if (releaseIndex < 2) {
+    return null;
+  }
+  const owner = pathSegments[releaseIndex - 2];
+  const repo = pathSegments[releaseIndex - 1];
+  if (!owner || !repo) {
+    return null;
+  }
+  const prefixSegments = pathSegments.slice(0, releaseIndex - 2);
+  const prefixPath = prefixSegments.length > 0 ? `/${prefixSegments.join("/")}` : "";
+  return `${parsed.origin}${prefixPath}/api/v1/repos/${owner}/${repo}/releases/latest`;
 }
 async function ensureDirectory(adapter, fullPath) {
   const parts = fullPath.split("/").filter(Boolean);
