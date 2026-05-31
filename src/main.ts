@@ -68,6 +68,53 @@ const DEFAULT_SETTINGS: PluginLoaderSettings = {
   autoInstallUpdates: false,
 };
 
+function normalizeEndpointLines(value: string): string[] {
+  return value
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean);
+}
+
+function getPrimaryEndpoint(source: LoaderSource): string {
+  return source.endpoints[0] ?? '';
+}
+
+function getFallbackEndpoints(source: LoaderSource): string {
+  return source.endpoints.slice(1).join('\n');
+}
+
+function setSourceEndpoints(source: LoaderSource, primaryEndpoint: string, fallbackEndpoints: string): void {
+  source.endpoints = [primaryEndpoint.trim(), ...normalizeEndpointLines(fallbackEndpoints)].filter(Boolean);
+}
+
+function hasCustomDisplayName(source: LoaderSource): boolean {
+  return !!source.displayName.trim() && source.displayName.trim() !== DEFAULT_SOURCE.displayName;
+}
+
+function getSourceHeading(source: LoaderSource): string {
+  if (source.pluginId.trim()) {
+    return source.pluginId.trim();
+  }
+
+  if (hasCustomDisplayName(source)) {
+    return source.displayName.trim();
+  }
+
+  return 'New source';
+}
+
+function hasAdvancedSourceSettings(source: LoaderSource): boolean {
+  return (
+    hasCustomDisplayName(source) ||
+    source.endpoints.length > 1 ||
+    source.branch.trim() !== DEFAULT_SOURCE.branch ||
+    source.manifestPath.trim() !== DEFAULT_SOURCE.manifestPath ||
+    source.mainPath.trim() !== DEFAULT_SOURCE.mainPath ||
+    source.stylesPath.trim() !== DEFAULT_SOURCE.stylesPath ||
+    !!source.authToken.trim()
+  );
+}
+
 export default class PluginLoaderPlugin extends Plugin {
   settings: PluginLoaderSettings = DEFAULT_SETTINGS;
 
@@ -412,12 +459,17 @@ class PluginLoaderSettingsTab extends PluginSettingTab {
 
     containerEl.createEl('h2', { text: 'Dev Loader Updater' });
     containerEl.createEl('p', {
-      text: 'Configure private plugin endpoints. Endpoints are tried in order for fallback (for example: Tailscale URL, LAN URL, then SSH URL).',
+      text: 'Add a private plugin source, point it at one endpoint, and install. Everything else is optional.',
+    });
+    containerEl.createEl('p', {
+      text: 'Minimum setup for each source: plugin id + primary endpoint.',
     });
 
+    containerEl.createEl('h3', { text: 'Behavior' });
+
     new Setting(containerEl)
-      .setName('Check for updates on startup')
-      .setDesc('Fetch remote manifests during plugin startup and report available updates.')
+      .setName('Check on startup')
+      .setDesc('Look for updates when Obsidian starts.')
       .addToggle((toggle) =>
         toggle.setValue(this.plugin.settings.checkOnStartup).onChange(async (value) => {
           this.plugin.settings.checkOnStartup = value;
@@ -426,8 +478,8 @@ class PluginLoaderSettingsTab extends PluginSettingTab {
       );
 
     new Setting(containerEl)
-      .setName('Auto-install updates on startup')
-      .setDesc('When enabled, newer remote versions are installed without a confirmation modal.')
+      .setName('Auto-install updates')
+      .setDesc('Install newer versions automatically after startup checks.')
       .addToggle((toggle) =>
         toggle.setValue(this.plugin.settings.autoInstallUpdates).onChange(async (value) => {
           this.plugin.settings.autoInstallUpdates = value;
@@ -435,21 +487,19 @@ class PluginLoaderSettingsTab extends PluginSettingTab {
         }),
       );
 
-    new Setting(containerEl)
-      .setName('Install or update all now')
-      .setDesc('Tests each source endpoint chain, asks for confirmation, then installs.')
-      .addButton((button) =>
-        button.setButtonText('Run').onClick(async () => {
-          await this.plugin.installOrUpdateAll(true);
-        }),
-      );
+    containerEl.createEl('h3', { text: 'Actions' });
 
     new Setting(containerEl)
-      .setName('Check updates now')
-      .setDesc('Checks all configured sources for newer versions.')
+      .setName('Run across all enabled sources')
+      .setDesc('Check for updates or install now.')
       .addButton((button) =>
-        button.setButtonText('Run').onClick(async () => {
+        button.setButtonText('Check').onClick(async () => {
           await this.plugin.checkForUpdates(false);
+        }),
+      )
+      .addButton((button) =>
+        button.setButtonText('Install/Update').setCta().onClick(async () => {
+          await this.plugin.installOrUpdateAll(true);
         }),
       );
 
@@ -457,7 +507,7 @@ class PluginLoaderSettingsTab extends PluginSettingTab {
 
     if (this.plugin.settings.sources.length === 0) {
       containerEl.createEl('p', {
-        text: 'No sources configured yet. Add one below.',
+        text: 'No sources yet. Add one and fill in the plugin id plus a primary endpoint.',
       });
     }
 
@@ -467,7 +517,7 @@ class PluginLoaderSettingsTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName('Add source')
-      .setDesc('Create a new plugin source entry.')
+      .setDesc('Create a new source entry with the default simple fields.')
       .addButton((button) =>
         button.setButtonText('Add').setCta().onClick(async () => {
           this.plugin.settings.sources.push({ ...DEFAULT_SOURCE, id: createId() });
@@ -478,11 +528,17 @@ class PluginLoaderSettingsTab extends PluginSettingTab {
   }
 
   private renderSourceCard(containerEl: HTMLElement, source: LoaderSource): void {
-    containerEl.createEl('h4', { text: source.displayName || 'Untitled Source' });
+    containerEl.createEl('h4', { text: getSourceHeading(source) });
+
+    if (!source.pluginId.trim() || !getPrimaryEndpoint(source)) {
+      containerEl.createEl('p', {
+        text: 'Required here: plugin id and a primary endpoint.',
+      });
+    }
 
     new Setting(containerEl)
       .setName('Enabled')
-      .setDesc('Only enabled sources are used for install/update checks.')
+      .setDesc('Use this source for checks and installs.')
       .addToggle((toggle) =>
         toggle.setValue(source.enabled).onChange(async (value) => {
           source.enabled = value;
@@ -491,100 +547,32 @@ class PluginLoaderSettingsTab extends PluginSettingTab {
       );
 
     new Setting(containerEl)
-      .setName('Display name')
-      .setDesc('Shown in notices and confirmation dialogs.')
+      .setName('Plugin id')
+      .setDesc('Required. Matches the plugin folder and manifest id.')
       .addText((text) =>
-        text.setValue(source.displayName).onChange(async (value) => {
-          source.displayName = value.trim() || 'Source';
+        text.setPlaceholder('example-plugin').setValue(source.pluginId).onChange(async (value) => {
+          source.pluginId = value.trim();
           await this.plugin.saveSettings();
           this.display();
         }),
       );
 
     new Setting(containerEl)
-      .setName('Plugin id')
-      .setDesc('Folder name under .obsidian/plugins and expected manifest id.')
-      .addText((text) =>
-        text.setPlaceholder('example-plugin').setValue(source.pluginId).onChange(async (value) => {
-          source.pluginId = value.trim();
-          await this.plugin.saveSettings();
-        }),
-      );
-
-    new Setting(containerEl)
-      .setName('Fallback endpoints')
-      .setDesc(
-        'One per line. HTTP(S) expects a directory containing manifest.json and main.js. SSH expects ssh://user@host/absolute/path/to/plugin-dir.',
-      )
-      .addTextArea((textArea) => {
-        textArea.inputEl.rows = 4;
-        textArea
-          .setValue(source.endpoints.join('\n'))
-          .onChange(async (value) => {
-            source.endpoints = value
-              .split('\n')
-              .map((line) => line.trim())
-              .filter(Boolean);
-            await this.plugin.saveSettings();
-          });
-      });
-
-    new Setting(containerEl)
-      .setName('Branch (SSH only)')
-      .setDesc('Reserved for future use; HTTP endpoints ignore this value.')
-      .addText((text) =>
-        text.setValue(source.branch).onChange(async (value) => {
-          source.branch = value.trim() || 'main';
-          await this.plugin.saveSettings();
-        }),
-      );
-
-    new Setting(containerEl)
-      .setName('Manifest path')
-      .setDesc('Relative path inside endpoint/repository.')
-      .addText((text) =>
-        text.setValue(source.manifestPath).onChange(async (value) => {
-          source.manifestPath = value.trim() || 'manifest.json';
-          await this.plugin.saveSettings();
-        }),
-      );
-
-    new Setting(containerEl)
-      .setName('Main script path')
-      .setDesc('Relative path for main.js inside endpoint/repository.')
-      .addText((text) =>
-        text.setValue(source.mainPath).onChange(async (value) => {
-          source.mainPath = value.trim() || 'main.js';
-          await this.plugin.saveSettings();
-        }),
-      );
-
-    new Setting(containerEl)
-      .setName('Styles path')
-      .setDesc('Relative path for styles.css inside endpoint/repository.')
-      .addText((text) =>
-        text.setValue(source.stylesPath).onChange(async (value) => {
-          source.stylesPath = value.trim() || 'styles.css';
-          await this.plugin.saveSettings();
-        }),
-      );
-
-    new Setting(containerEl)
-      .setName('Gitea token')
-      .setDesc('Optional token used as HTTP Authorization header (token ...).')
+      .setName('Primary endpoint')
+      .setDesc('Required. Use one HTTP(S) plugin folder URL or one ssh:// source path.')
       .addText((text) =>
         text
-          .setPlaceholder('optional')
-          .setValue(source.authToken)
+          .setPlaceholder('https://host/path/to/plugin or ssh://user@host/absolute/path/to/plugin-dir')
+          .setValue(getPrimaryEndpoint(source))
           .onChange(async (value) => {
-            source.authToken = value.trim();
+            setSourceEndpoints(source, value, getFallbackEndpoints(source));
             await this.plugin.saveSettings();
           }),
       );
 
     new Setting(containerEl)
       .setName('Source actions')
-      .setDesc('Test fallback reachability, install/update this source, or remove it.')
+      .setDesc('Test, install, or remove this source.')
       .addButton((button) =>
         button.setButtonText('Test').onClick(async () => {
           try {
@@ -607,6 +595,85 @@ class PluginLoaderSettingsTab extends PluginSettingTab {
           await this.plugin.saveSettings();
           this.display();
         }),
+      );
+
+    const advancedDetails = containerEl.createEl('details');
+    advancedDetails.open = hasAdvancedSourceSettings(source);
+    advancedDetails.createEl('summary', { text: 'Advanced source settings' });
+
+    new Setting(advancedDetails)
+      .setName('Display name')
+      .setDesc('Optional label shown in notices and confirmation dialogs.')
+      .addText((text) =>
+        text.setValue(source.displayName).onChange(async (value) => {
+          source.displayName = value.trim() || DEFAULT_SOURCE.displayName;
+          await this.plugin.saveSettings();
+          this.display();
+        }),
+      );
+
+    new Setting(advancedDetails)
+      .setName('Fallback endpoints')
+      .setDesc('Optional extras after the primary endpoint. One per line, tried in order.')
+      .addTextArea((textArea) => {
+        textArea.inputEl.rows = 3;
+        textArea.setValue(getFallbackEndpoints(source)).onChange(async (value) => {
+          setSourceEndpoints(source, getPrimaryEndpoint(source), value);
+          await this.plugin.saveSettings();
+        });
+      });
+
+    new Setting(advancedDetails)
+      .setName('Branch (SSH only)')
+      .setDesc('Reserved for future use. Most setups can ignore this.')
+      .addText((text) =>
+        text.setValue(source.branch).onChange(async (value) => {
+          source.branch = value.trim() || 'main';
+          await this.plugin.saveSettings();
+        }),
+      );
+
+    new Setting(advancedDetails)
+      .setName('Manifest path')
+      .setDesc('Only change this when the manifest is not at the default path.')
+      .addText((text) =>
+        text.setValue(source.manifestPath).onChange(async (value) => {
+          source.manifestPath = value.trim() || 'manifest.json';
+          await this.plugin.saveSettings();
+        }),
+      );
+
+    new Setting(advancedDetails)
+      .setName('Main script path')
+      .setDesc('Only change this when main.js is stored elsewhere.')
+      .addText((text) =>
+        text.setValue(source.mainPath).onChange(async (value) => {
+          source.mainPath = value.trim() || 'main.js';
+          await this.plugin.saveSettings();
+        }),
+      );
+
+    new Setting(advancedDetails)
+      .setName('Styles path')
+      .setDesc('Only change this when styles.css is stored elsewhere.')
+      .addText((text) =>
+        text.setValue(source.stylesPath).onChange(async (value) => {
+          source.stylesPath = value.trim() || 'styles.css';
+          await this.plugin.saveSettings();
+        }),
+      );
+
+    new Setting(advancedDetails)
+      .setName('Gitea token')
+      .setDesc('Optional private token for authenticated HTTP downloads.')
+      .addText((text) =>
+        text
+          .setPlaceholder('optional')
+          .setValue(source.authToken)
+          .onChange(async (value) => {
+            source.authToken = value.trim();
+            await this.plugin.saveSettings();
+          }),
       );
   }
 }
