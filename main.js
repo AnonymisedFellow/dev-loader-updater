@@ -37,7 +37,8 @@ var STYLES_FILE_NAME = "styles.css";
 var DEFAULT_SETTINGS = {
   sources: [],
   checkOnStartup: true,
-  autoInstallUpdates: false
+  autoInstallUpdates: false,
+  autoReloadAfterInstall: false
 };
 function normalizeEndpointLines(value) {
   return value.split("\n").map((line) => line.trim()).filter(Boolean);
@@ -71,7 +72,8 @@ function normalizeSettings(loaded) {
     ...loaded ?? {},
     sources: (loaded?.sources ?? []).map((source) => normalizeSource(source)),
     checkOnStartup: loaded?.checkOnStartup !== false,
-    autoInstallUpdates: loaded?.autoInstallUpdates === true
+    autoInstallUpdates: loaded?.autoInstallUpdates === true,
+    autoReloadAfterInstall: loaded?.autoReloadAfterInstall === true
   };
 }
 function hasCustomDisplayName(source) {
@@ -177,7 +179,7 @@ var PluginLoaderPlugin = class extends import_obsidian.Plugin {
         }
       }
       await this.writePluginFiles(pluginId, remote);
-      await this.tryEnablePlugin(pluginId);
+      await this.applyInstalledPluginState(pluginId);
       new import_obsidian.Notice(
         `Dev Loader Updater: installed ${sourceName} (${remoteVersion}) from ${remote.endpoint}`
       );
@@ -354,6 +356,39 @@ var PluginLoaderPlugin = class extends import_obsidian.Plugin {
       await adapter.write((0, import_obsidian.normalizePath)(`${pluginDir}/styles.css`), remote.stylesCss);
     }
   }
+  async applyInstalledPluginState(pluginId) {
+    if (this.settings.autoReloadAfterInstall) {
+      const reloaded = await this.tryReloadPlugin(pluginId);
+      if (reloaded) {
+        return;
+      }
+    }
+    await this.tryEnablePlugin(pluginId);
+  }
+  async tryReloadPlugin(pluginId) {
+    const pluginsApi = this.app.plugins;
+    if (!pluginsApi) {
+      return false;
+    }
+    const wasEnabled = pluginsApi.enabledPlugins instanceof Set && pluginsApi.enabledPlugins.has(pluginId);
+    if (!wasEnabled) {
+      return false;
+    }
+    try {
+      if (pluginsApi.disablePluginAndSave && pluginsApi.enablePluginAndSave) {
+        await pluginsApi.disablePluginAndSave(pluginId);
+        await pluginsApi.enablePluginAndSave(pluginId);
+        return true;
+      }
+      if (pluginsApi.unloadPlugin && pluginsApi.loadPlugin) {
+        await pluginsApi.unloadPlugin(pluginId);
+        await pluginsApi.loadPlugin(pluginId);
+        return true;
+      }
+    } catch {
+    }
+    return false;
+  }
   async tryEnablePlugin(pluginId) {
     const pluginsApi = this.app.plugins;
     if (!pluginsApi) {
@@ -396,6 +431,12 @@ var PluginLoaderSettingsTab = class extends import_obsidian.PluginSettingTab {
     new import_obsidian.Setting(containerEl).setName("Auto-install updates").setDesc("Install newer versions automatically after startup checks.").addToggle(
       (toggle) => toggle.setValue(this.plugin.settings.autoInstallUpdates).onChange(async (value) => {
         this.plugin.settings.autoInstallUpdates = value;
+        await this.plugin.saveSettings();
+      })
+    );
+    new import_obsidian.Setting(containerEl).setName("Auto-reload after install/update").setDesc("If the target plugin is already enabled, try to reload it so new code applies immediately.").addToggle(
+      (toggle) => toggle.setValue(this.plugin.settings.autoReloadAfterInstall).onChange(async (value) => {
+        this.plugin.settings.autoReloadAfterInstall = value;
         await this.plugin.saveSettings();
       })
     );
