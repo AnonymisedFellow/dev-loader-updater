@@ -553,6 +553,7 @@ function isSameOrigin(left, right) {
 var PluginLoaderSettingsTab = class extends import_obsidian.PluginSettingTab {
   constructor(app, plugin) {
     super(app, plugin);
+    this.pendingEndpointCounts = /* @__PURE__ */ new Map();
     this.plugin = plugin;
   }
   display() {
@@ -606,7 +607,11 @@ var PluginLoaderSettingsTab = class extends import_obsidian.PluginSettingTab {
     const heading = new import_obsidian.Setting(containerEl).setName(getSourceHeading(source)).setHeading().addToggle((toggle) => {
       toggle.setValue(source.enabled);
       toggle.onChange(async (value) => {
-        source.enabled = value;
+        const currentSource = this.getCurrentSource(source.id);
+        if (!currentSource) {
+          return;
+        }
+        currentSource.enabled = value;
         await this.plugin.saveSettings();
       });
     });
@@ -621,16 +626,38 @@ var PluginLoaderSettingsTab = class extends import_obsidian.PluginSettingTab {
         this.display();
       });
     });
-    const endpoints = source.endpoints.length > 0 ? source.endpoints : [""];
-    endpoints.forEach((endpoint, index) => {
+    const pendingEndpointCount = this.getPendingEndpointCount(source);
+    const endpointCount = Math.max(1, source.endpoints.length + pendingEndpointCount);
+    for (let index = 0; index < endpointCount; index += 1) {
+      const isPending = index >= source.endpoints.length;
+      const endpoint = source.endpoints[index] ?? "";
+      let persistedIndex = isPending ? null : index;
       const endpointSetting = new import_obsidian.Setting(containerEl).setName(`Release URL ${index + 1}`).addText((text) => {
         text.setValue(endpoint);
         text.onChange(async (value) => {
+          const currentSource = this.getCurrentSource(source.id);
+          if (!currentSource) {
+            return;
+          }
           const normalized = value.trim();
-          if (normalized) {
-            source.endpoints[index] = normalized;
+          if (persistedIndex === null && normalized) {
+            currentSource.endpoints.push(normalized);
+            persistedIndex = currentSource.endpoints.length - 1;
+            this.setPendingEndpointCount(
+              currentSource,
+              this.getPendingEndpointCount(currentSource) - 1
+            );
+          } else if (persistedIndex !== null && normalized) {
+            currentSource.endpoints[persistedIndex] = normalized;
+          } else if (persistedIndex !== null) {
+            currentSource.endpoints.splice(persistedIndex, 1);
+            persistedIndex = null;
+            this.setPendingEndpointCount(
+              currentSource,
+              this.getPendingEndpointCount(currentSource) + 1
+            );
           } else {
-            source.endpoints.splice(index, 1);
+            return;
           }
           await this.plugin.saveSettings();
         });
@@ -639,17 +666,39 @@ var PluginLoaderSettingsTab = class extends import_obsidian.PluginSettingTab {
         button.setIcon("trash");
         button.setTooltip("Remove URL");
         button.onClick(async () => {
-          source.endpoints.splice(index, 1);
+          const currentSource = this.getCurrentSource(source.id);
+          if (!currentSource) {
+            return;
+          }
+          if (persistedIndex === null) {
+            this.setPendingEndpointCount(
+              currentSource,
+              this.getPendingEndpointCount(currentSource) - 1
+            );
+          } else {
+            currentSource.endpoints.splice(persistedIndex, 1);
+            persistedIndex = null;
+            this.setPendingEndpointCount(
+              currentSource,
+              this.getPendingEndpointCount(currentSource) + 1
+            );
+          }
           await this.plugin.saveSettings();
           this.display();
         });
       });
-    });
+    }
     new import_obsidian.Setting(containerEl).setName("Add URL").addButton((button) => {
       button.setButtonText("Add");
-      button.onClick(async () => {
-        source.endpoints.push("");
-        await this.plugin.saveSettings();
+      button.onClick(() => {
+        const currentSource = this.getCurrentSource(source.id);
+        if (!currentSource) {
+          return;
+        }
+        this.setPendingEndpointCount(
+          currentSource,
+          this.getPendingEndpointCount(currentSource) + 1
+        );
         this.display();
       });
     });
@@ -657,23 +706,28 @@ var PluginLoaderSettingsTab = class extends import_obsidian.PluginSettingTab {
       text.inputEl.type = "password";
       text.setValue(source.authToken);
       text.onChange(async (value) => {
-        source.authToken = value.trim();
+        const currentSource = this.getCurrentSource(source.id);
+        if (!currentSource) {
+          return;
+        }
+        currentSource.authToken = value.trim();
         await this.plugin.saveSettings();
       });
     });
     new import_obsidian.Setting(containerEl).setName("Actions").addButton((button) => {
       button.setButtonText("Test");
       button.onClick(async () => {
+        const currentSource = this.getCurrentSource(source.id) ?? source;
         try {
-          const remote = await this.plugin.testSourceConnectivity(source);
+          const remote = await this.plugin.testSourceConnectivity(currentSource);
           new import_obsidian.Notice(
-            `Dev Loader Updater: ${getSourceDisplayName(source, remote.manifest)} reachable via ${redactEndpoint(remote.endpoint)}`
+            `Dev Loader Updater: ${getSourceDisplayName(currentSource, remote.manifest)} reachable via ${redactEndpoint(remote.endpoint)}`
           );
           this.display();
         } catch (error) {
           const reason = error instanceof Error ? error.message : String(error);
           new import_obsidian.Notice(
-            `Dev Loader Updater: test failed for ${getSourceDisplayName(source)} - ${reason}`
+            `Dev Loader Updater: test failed for ${getSourceDisplayName(currentSource)} - ${reason}`
           );
         }
       });
@@ -681,9 +735,24 @@ var PluginLoaderSettingsTab = class extends import_obsidian.PluginSettingTab {
       button.setButtonText("Install/Update");
       button.setCta();
       button.onClick(async () => {
-        await this.plugin.installOrUpdateSource(source, true);
+        await this.plugin.installOrUpdateSource(this.getCurrentSource(source.id) ?? source, true);
       });
     });
+  }
+  getCurrentSource(sourceId) {
+    return this.plugin.settings.sources.find((source) => source.id === sourceId);
+  }
+  getPendingEndpointCount(source) {
+    const existing = this.pendingEndpointCounts.get(source.id);
+    if (existing !== void 0) {
+      return existing;
+    }
+    const initial = source.endpoints.length === 0 ? 1 : 0;
+    this.pendingEndpointCounts.set(source.id, initial);
+    return initial;
+  }
+  setPendingEndpointCount(source, count) {
+    this.pendingEndpointCounts.set(source.id, Math.max(0, count));
   }
 };
 var ConfirmInstallModal = class _ConfirmInstallModal extends import_obsidian.Modal {
