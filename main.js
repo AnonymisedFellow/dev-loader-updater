@@ -561,15 +561,15 @@ var PluginLoaderSettingsTab = class extends import_obsidian.PluginSettingTab {
   display() {
     const { containerEl } = this;
     containerEl.empty();
-    new import_obsidian.Setting(containerEl).setName("Dev Loader Updater").setDesc("Private plugin sources and ordered fallbacks.").setHeading();
-    new import_obsidian.Setting(containerEl).setName("Check on startup").setDesc("Look for updates when Obsidian starts.").addToggle((toggle) => {
+    new import_obsidian.Setting(containerEl).setName("Dev Loader Updater").setHeading();
+    new import_obsidian.Setting(containerEl).setName("Check on startup").addToggle((toggle) => {
       toggle.setValue(this.plugin.settings.checkOnStartup);
       toggle.onChange(async (value) => {
         this.plugin.settings.checkOnStartup = value;
         await this.plugin.saveSettings();
       });
     });
-    new import_obsidian.Setting(containerEl).setName("Auto-install updates").setDesc("Install newer versions after startup checks.").addToggle((toggle) => {
+    new import_obsidian.Setting(containerEl).setName("Auto-install updates").addToggle((toggle) => {
       toggle.setValue(this.plugin.settings.autoInstallUpdates);
       toggle.onChange(async (value) => {
         this.plugin.settings.autoInstallUpdates = value;
@@ -591,7 +591,7 @@ var PluginLoaderSettingsTab = class extends import_obsidian.PluginSettingTab {
     });
     new import_obsidian.Setting(containerEl).setName("Sources").setHeading();
     if (this.plugin.settings.sources.length === 0) {
-      new import_obsidian.Setting(containerEl).setName("No sources configured").setDesc("Add a release page or plugin directory URL below.");
+      new import_obsidian.Setting(containerEl).setName("No sources configured");
     }
     this.plugin.settings.sources.forEach((source) => {
       this.renderSourceCard(containerEl, source);
@@ -607,9 +607,7 @@ var PluginLoaderSettingsTab = class extends import_obsidian.PluginSettingTab {
     });
   }
   renderSourceCard(containerEl, source) {
-    const heading = new import_obsidian.Setting(containerEl).setName(getSourceHeading(source)).setDesc(
-      source.pluginId ? `Plugin ID: ${source.pluginId}` : "Plugin ID is detected after testing."
-    ).setHeading();
+    const heading = new import_obsidian.Setting(containerEl).setName(getSourceHeading(source)).setHeading();
     heading.addExtraButton((button) => {
       button.setIcon("trash");
       button.setTooltip("Remove source");
@@ -628,24 +626,22 @@ var PluginLoaderSettingsTab = class extends import_obsidian.PluginSettingTab {
         await this.plugin.saveSettings();
       });
     });
-    new import_obsidian.Setting(containerEl).setName("Release URLs").setDesc("One per line, in priority order. Gitea release page or plugin directory.").addTextArea((text) => {
-      text.setPlaceholder("https://gitea.example/owner/repo/releases");
+    new import_obsidian.Setting(containerEl).setName("Release URLs").addTextArea((text) => {
       text.setValue(source.endpoints.join("\n"));
       text.onChange(async (value) => {
         source.endpoints = normalizeEndpointLines(value);
         await this.plugin.saveSettings();
       });
     });
-    new import_obsidian.Setting(containerEl).setName("Gitea token").setDesc("Optional for private Gitea releases; stored in plugin data.").addText((text) => {
+    new import_obsidian.Setting(containerEl).setName("Gitea token").addText((text) => {
       text.inputEl.type = "password";
-      text.setPlaceholder("Optional");
       text.setValue(source.authToken);
       text.onChange(async (value) => {
         source.authToken = value.trim();
         await this.plugin.saveSettings();
       });
     });
-    new import_obsidian.Setting(containerEl).setName("Source actions").addButton((button) => {
+    new import_obsidian.Setting(containerEl).setName("Actions").addButton((button) => {
       button.setButtonText("Test");
       button.onClick(async () => {
         try {
