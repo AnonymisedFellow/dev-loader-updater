@@ -46,9 +46,6 @@ function createDefaultSource() {
     enabled: true
   };
 }
-function normalizeEndpointLines(value) {
-  return value.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
-}
 function normalizeSource(input) {
   const source = isRecord(input) ? input : {};
   const id = typeof source["id"] === "string" && source["id"].trim() ? source["id"].trim() : createId();
@@ -561,7 +558,6 @@ var PluginLoaderSettingsTab = class extends import_obsidian.PluginSettingTab {
   display() {
     const { containerEl } = this;
     containerEl.empty();
-    new import_obsidian.Setting(containerEl).setName("Dev Loader Updater").setHeading();
     new import_obsidian.Setting(containerEl).setName("Check on startup").addToggle((toggle) => {
       toggle.setValue(this.plugin.settings.checkOnStartup);
       toggle.onChange(async (value) => {
@@ -596,7 +592,7 @@ var PluginLoaderSettingsTab = class extends import_obsidian.PluginSettingTab {
     this.plugin.settings.sources.forEach((source) => {
       this.renderSourceCard(containerEl, source);
     });
-    new import_obsidian.Setting(containerEl).setName("Add source").addButton((button) => {
+    new import_obsidian.Setting(containerEl).setName("Add source").setHeading().addButton((button) => {
       button.setButtonText("Add");
       button.setCta();
       button.onClick(async () => {
@@ -607,7 +603,13 @@ var PluginLoaderSettingsTab = class extends import_obsidian.PluginSettingTab {
     });
   }
   renderSourceCard(containerEl, source) {
-    const heading = new import_obsidian.Setting(containerEl).setName(getSourceHeading(source)).setHeading();
+    const heading = new import_obsidian.Setting(containerEl).setName(getSourceHeading(source)).setHeading().addToggle((toggle) => {
+      toggle.setValue(source.enabled);
+      toggle.onChange(async (value) => {
+        source.enabled = value;
+        await this.plugin.saveSettings();
+      });
+    });
     heading.addExtraButton((button) => {
       button.setIcon("trash");
       button.setTooltip("Remove source");
@@ -619,18 +621,36 @@ var PluginLoaderSettingsTab = class extends import_obsidian.PluginSettingTab {
         this.display();
       });
     });
-    new import_obsidian.Setting(containerEl).setName("Enabled").addToggle((toggle) => {
-      toggle.setValue(source.enabled);
-      toggle.onChange(async (value) => {
-        source.enabled = value;
-        await this.plugin.saveSettings();
+    const endpoints = source.endpoints.length > 0 ? source.endpoints : [""];
+    endpoints.forEach((endpoint, index) => {
+      const endpointSetting = new import_obsidian.Setting(containerEl).setName(`Release URL ${index + 1}`).addText((text) => {
+        text.setValue(endpoint);
+        text.onChange(async (value) => {
+          const normalized = value.trim();
+          if (normalized) {
+            source.endpoints[index] = normalized;
+          } else {
+            source.endpoints.splice(index, 1);
+          }
+          await this.plugin.saveSettings();
+        });
+      });
+      endpointSetting.addExtraButton((button) => {
+        button.setIcon("trash");
+        button.setTooltip("Remove URL");
+        button.onClick(async () => {
+          source.endpoints.splice(index, 1);
+          await this.plugin.saveSettings();
+          this.display();
+        });
       });
     });
-    new import_obsidian.Setting(containerEl).setName("Release URLs").addTextArea((text) => {
-      text.setValue(source.endpoints.join("\n"));
-      text.onChange(async (value) => {
-        source.endpoints = normalizeEndpointLines(value);
+    new import_obsidian.Setting(containerEl).setName("Add URL").addButton((button) => {
+      button.setButtonText("Add");
+      button.onClick(async () => {
+        source.endpoints.push("");
         await this.plugin.saveSettings();
+        this.display();
       });
     });
     new import_obsidian.Setting(containerEl).setName("Gitea token").addText((text) => {
