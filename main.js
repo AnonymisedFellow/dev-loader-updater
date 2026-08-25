@@ -24,61 +24,206 @@ __export(main_exports, {
 });
 module.exports = __toCommonJS(main_exports);
 var import_obsidian = require("obsidian");
-var DEFAULT_SOURCE = {
-  id: createId(),
-  pluginId: "",
-  displayName: "New Source",
-  endpoints: [],
-  enabled: true
-};
+
+// src/loader-utils.ts
+var DEFAULT_SOURCE_NAME = "New Source";
 var MANIFEST_FILE_NAME = "manifest.json";
 var MAIN_FILE_NAME = "main.js";
 var STYLES_FILE_NAME = "styles.css";
 var DEFAULT_SETTINGS = {
   sources: [],
   checkOnStartup: true,
-  autoInstallUpdates: false,
-  autoReloadAfterInstall: false
+  autoInstallUpdates: false
 };
+function createDefaultSource() {
+  return {
+    id: createId(),
+    pluginId: "",
+    displayName: DEFAULT_SOURCE_NAME,
+    endpoints: [],
+    authToken: "",
+    enabled: true
+  };
+}
 function normalizeEndpointLines(value) {
-  return value.split("\n").map((line) => line.trim()).filter(Boolean);
-}
-function getLocalNetworkEndpoint(source) {
-  return source.endpoints[0] ?? "";
-}
-function getTailscaleEndpoint(source) {
-  return source.endpoints[1] ?? "";
-}
-function setVerifiedEndpoints(source, localNetworkEndpoint, tailscaleEndpoint) {
-  source.endpoints = normalizeEndpointLines([localNetworkEndpoint.trim(), tailscaleEndpoint.trim()].join("\n")).slice(0, 2);
+  return value.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
 }
 function normalizeSource(input) {
-  const id = typeof input?.id === "string" && input.id.trim() ? input.id.trim() : createId();
-  const pluginId = typeof input?.pluginId === "string" ? input.pluginId.trim() : "";
-  const displayName = typeof input?.displayName === "string" && input.displayName.trim() ? input.displayName.trim() : DEFAULT_SOURCE.displayName;
-  const endpoints = Array.isArray(input?.endpoints) ? input.endpoints.map((candidate) => typeof candidate === "string" ? candidate.trim() : "").filter(Boolean).slice(0, 2) : [];
-  const enabled = input?.enabled !== false;
+  const source = isRecord(input) ? input : {};
+  const id = typeof source["id"] === "string" && source["id"].trim() ? source["id"].trim() : createId();
+  const pluginId = typeof source["pluginId"] === "string" ? source["pluginId"].trim() : "";
+  const displayName = typeof source["displayName"] === "string" && source["displayName"].trim() ? source["displayName"].trim() : DEFAULT_SOURCE_NAME;
+  const endpoints = Array.isArray(source["endpoints"]) ? source["endpoints"].filter((candidate) => typeof candidate === "string").map((candidate) => candidate.trim()).filter(Boolean) : [];
+  const authToken = typeof source["authToken"] === "string" ? source["authToken"].trim() : "";
   return {
     id,
     pluginId,
     displayName,
     endpoints,
-    enabled
+    authToken,
+    enabled: source["enabled"] !== false
   };
 }
 function normalizeSettings(loaded) {
+  const data = isRecord(loaded) ? loaded : {};
+  const sources = Array.isArray(data["sources"]) ? data["sources"].map((source) => normalizeSource(source)) : [];
   return {
     ...DEFAULT_SETTINGS,
-    ...loaded ?? {},
-    sources: (loaded?.sources ?? []).map((source) => normalizeSource(source)),
-    checkOnStartup: loaded?.checkOnStartup !== false,
-    autoInstallUpdates: loaded?.autoInstallUpdates === true,
-    autoReloadAfterInstall: loaded?.autoReloadAfterInstall === true
+    sources,
+    checkOnStartup: data["checkOnStartup"] !== false,
+    autoInstallUpdates: data["autoInstallUpdates"] === true
   };
 }
 function hasCustomDisplayName(source) {
-  return !!source.displayName.trim() && source.displayName.trim() !== DEFAULT_SOURCE.displayName;
+  return !!source.displayName.trim() && source.displayName.trim() !== DEFAULT_SOURCE_NAME;
 }
+function parseManifest(manifestText, expectedPluginId) {
+  const parsed = JSON.parse(manifestText);
+  if (!isRecord(parsed) || typeof parsed["id"] !== "string" || !parsed["id"].trim()) {
+    throw new Error("manifest is missing a valid id");
+  }
+  const manifestId = parsed["id"].trim();
+  if (!isSafePluginId(manifestId)) {
+    throw new Error(`manifest id '${manifestId}' is not a safe plugin id`);
+  }
+  if (expectedPluginId && manifestId !== expectedPluginId) {
+    throw new Error(
+      `manifest id ${manifestId} does not match configured plugin id ${expectedPluginId}`
+    );
+  }
+  if (typeof parsed["version"] !== "string" || !parsed["version"].trim()) {
+    throw new Error("manifest is missing a valid version");
+  }
+  return {
+    ...parsed,
+    id: manifestId
+  };
+}
+function isSafePluginId(pluginId) {
+  return /^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(pluginId);
+}
+function deriveGiteaLatestReleaseApiUrl(endpoint) {
+  let parsed;
+  try {
+    parsed = new URL(endpoint);
+  } catch {
+    return null;
+  }
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+    return null;
+  }
+  const pathSegments = parsed.pathname.split("/").filter(Boolean);
+  const releaseIndex = pathSegments.lastIndexOf("releases");
+  if (releaseIndex < 2) {
+    return null;
+  }
+  const owner = pathSegments[releaseIndex - 2];
+  const repo = pathSegments[releaseIndex - 1];
+  if (!owner || !repo) {
+    return null;
+  }
+  const prefixSegments = pathSegments.slice(0, releaseIndex - 2);
+  const prefixPath = prefixSegments.length > 0 ? `/${prefixSegments.join("/")}` : "";
+  return `${parsed.origin}${prefixPath}/api/v1/repos/${owner}/${repo}/releases/latest`;
+}
+function deriveDirectPluginAssetUrls(endpoint) {
+  const parsed = new URL(endpoint);
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+    throw new Error("source URL must use HTTP or HTTPS");
+  }
+  const path = parsed.pathname.endsWith("/") ? parsed.pathname : parsed.pathname.toLowerCase().endsWith(`/${MANIFEST_FILE_NAME}`) ? parsed.pathname.slice(0, -MANIFEST_FILE_NAME.length) : `${parsed.pathname}/`;
+  const base = new URL(path, parsed.origin);
+  const assetUrl = (fileName) => new URL(fileName, base).toString();
+  return {
+    manifestUrl: assetUrl(MANIFEST_FILE_NAME),
+    mainJsUrl: assetUrl(MAIN_FILE_NAME),
+    stylesCssUrl: assetUrl(STYLES_FILE_NAME)
+  };
+}
+function compareVersions(left, right) {
+  const leftParts = sanitizeVersion(left);
+  const rightParts = sanitizeVersion(right);
+  const maxLength = Math.max(leftParts.length, rightParts.length);
+  for (let index = 0; index < maxLength; index += 1) {
+    const leftPart = leftParts[index] ?? 0;
+    const rightPart = rightParts[index] ?? 0;
+    if (leftPart > rightPart) {
+      return 1;
+    }
+    if (leftPart < rightPart) {
+      return -1;
+    }
+  }
+  return 0;
+}
+function redactEndpoint(endpoint) {
+  try {
+    const parsed = new URL(endpoint);
+    parsed.username = "";
+    parsed.password = "";
+    parsed.search = "";
+    parsed.hash = "";
+    return parsed.toString();
+  } catch {
+    return "<configured source>";
+  }
+}
+function createAuthHeaders(authToken) {
+  const token = authToken.trim();
+  return token ? { Authorization: `token ${token}` } : void 0;
+}
+async function writePluginFilesWithRollback(adapter, paths, contents) {
+  const previous = await Promise.all([
+    readExistingFile(adapter, paths.manifest),
+    readExistingFile(adapter, paths.main),
+    readExistingFile(adapter, paths.styles)
+  ]);
+  try {
+    await adapter.write(paths.manifest, contents.manifest);
+    await adapter.write(paths.main, contents.main);
+    if (contents.styles !== void 0) {
+      await adapter.write(paths.styles, contents.styles);
+    } else if (previous[2].exists) {
+      await adapter.remove(paths.styles);
+    }
+  } catch (error) {
+    await Promise.allSettled([
+      restoreFile(adapter, paths.manifest, previous[0]),
+      restoreFile(adapter, paths.main, previous[1]),
+      restoreFile(adapter, paths.styles, previous[2])
+    ]);
+    throw error;
+  }
+}
+function sanitizeVersion(version) {
+  return version.replace(/^[^\d]*/, "").split(/[^\d]+/).filter(Boolean).map((segment) => Number.parseInt(segment, 10)).map((value) => Number.isFinite(value) ? value : 0);
+}
+function isRecord(value) {
+  return typeof value === "object" && value !== null;
+}
+async function readExistingFile(adapter, path) {
+  if (!await adapter.exists(path)) {
+    return { exists: false };
+  }
+  return {
+    exists: true,
+    content: await adapter.read(path)
+  };
+}
+async function restoreFile(adapter, path, previous) {
+  if (previous.exists) {
+    await adapter.write(path, previous.content ?? "");
+    return;
+  }
+  if (await adapter.exists(path)) {
+    await adapter.remove(path);
+  }
+}
+function createId() {
+  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
+// src/main.ts
 function getSourceHeading(source) {
   if (source.pluginId.trim()) {
     return source.pluginId.trim();
@@ -119,7 +264,7 @@ function syncSourceMetadataFromManifest(source, manifest) {
 var PluginLoaderPlugin = class extends import_obsidian.Plugin {
   constructor() {
     super(...arguments);
-    this.settings = DEFAULT_SETTINGS;
+    this.settings = normalizeSettings(null);
   }
   async onload() {
     await this.loadSettings();
@@ -181,7 +326,7 @@ var PluginLoaderPlugin = class extends import_obsidian.Plugin {
       await this.writePluginFiles(pluginId, remote);
       await this.applyInstalledPluginState(pluginId);
       new import_obsidian.Notice(
-        `Dev Loader Updater: installed ${sourceName} (${remoteVersion}) from ${remote.endpoint}`
+        `Dev Loader Updater: installed ${sourceName} (${remoteVersion}) from ${redactEndpoint(remote.endpoint)}. Restart Obsidian if it was already enabled.`
       );
       return true;
     } catch (error) {
@@ -241,7 +386,9 @@ var PluginLoaderPlugin = class extends import_obsidian.Plugin {
         );
       } catch (error) {
         const reason = error instanceof Error ? error.message : String(error);
-        new import_obsidian.Notice(`Dev Loader Updater: update check failed for ${getSourceDisplayName(source)} - ${reason}`);
+        new import_obsidian.Notice(
+          `Dev Loader Updater: update check failed for ${getSourceDisplayName(source)} - ${reason}`
+        );
       }
     }
     if (updatesFound === 0 && !silentWhenUpToDate) {
@@ -256,11 +403,9 @@ var PluginLoaderPlugin = class extends import_obsidian.Plugin {
     const errors = [];
     for (const endpoint of endpoints) {
       try {
-        const releaseAssets = await this.tryResolveLatestReleaseAssetUrls(endpoint);
-        if (!releaseAssets) {
-          throw new Error("endpoint must be a Gitea repository releases URL");
-        }
-        const manifestText = await this.httpGetText(releaseAssets.manifestUrl);
+        const endpointAuthToken = deriveGiteaLatestReleaseApiUrl(endpoint) ? source.authToken : "";
+        const releaseAssets = await this.tryResolveLatestReleaseAssetUrls(endpoint, endpointAuthToken) ?? deriveDirectPluginAssetUrls(endpoint);
+        const manifestText = await this.httpGetText(releaseAssets.manifestUrl, endpointAuthToken);
         const manifest = parseManifest(manifestText, source.pluginId);
         if (manifestOnly) {
           return {
@@ -269,49 +414,62 @@ var PluginLoaderPlugin = class extends import_obsidian.Plugin {
             mainJs: ""
           };
         }
-        const mainJs = await this.httpGetText(releaseAssets.mainJsUrl);
+        const mainJs = await this.httpGetText(releaseAssets.mainJsUrl, endpointAuthToken);
         let stylesCss;
         if (releaseAssets.stylesCssUrl) {
-          stylesCss = await this.httpGetText(releaseAssets.stylesCssUrl);
+          try {
+            stylesCss = await this.httpGetText(releaseAssets.stylesCssUrl, endpointAuthToken);
+          } catch {
+            stylesCss = void 0;
+          }
         }
         return {
           endpoint,
           manifest,
           mainJs,
-          ...stylesCss ? { stylesCss } : {}
+          ...stylesCss !== void 0 ? { stylesCss } : {}
         };
       } catch (error) {
         const reason = error instanceof Error ? error.message : String(error);
-        errors.push(`${endpoint}: ${reason}`);
+        errors.push(`${redactEndpoint(endpoint)}: ${reason}`);
       }
     }
-    throw new Error(`all endpoints failed: ${errors.join(" | ")}`);
+    throw new Error(`all configured release URLs failed: ${errors.join(" | ")}`);
   }
-  async httpGetText(url) {
+  async httpGetText(url, authToken = "") {
+    const headers = createAuthHeaders(authToken);
     const response = await (0, import_obsidian.requestUrl)({
       url,
       method: "GET",
+      ...headers ? { headers } : {},
       throw: false
     });
     if (response.status < 200 || response.status >= 300) {
-      throw new Error(`HTTP ${response.status} for ${url}`);
+      throw new Error(`HTTP ${response.status} for ${redactEndpoint(url)}`);
     }
     return response.text;
   }
-  async tryResolveLatestReleaseAssetUrls(endpoint) {
+  async tryResolveLatestReleaseAssetUrls(endpoint, authToken) {
     const apiUrl = deriveGiteaLatestReleaseApiUrl(endpoint);
     if (!apiUrl) {
       return null;
     }
+    const headers = createAuthHeaders(authToken);
     const response = await (0, import_obsidian.requestUrl)({
       url: apiUrl,
       method: "GET",
+      ...headers ? { headers } : {},
       throw: false
     });
     if (response.status < 200 || response.status >= 300) {
       return null;
     }
-    const release = JSON.parse(response.text);
+    let release;
+    try {
+      release = JSON.parse(response.text);
+    } catch {
+      return null;
+    }
     const assetsByName = /* @__PURE__ */ new Map();
     for (const asset of release.assets ?? []) {
       if (!asset?.name || !asset.browser_download_url) {
@@ -324,8 +482,11 @@ var PluginLoaderPlugin = class extends import_obsidian.Plugin {
     if (!manifestUrl || !mainJsUrl) {
       return null;
     }
+    if (!isSameOrigin(endpoint, manifestUrl) || !isSameOrigin(endpoint, mainJsUrl)) {
+      return null;
+    }
     const stylesCssUrl = assetsByName.get(STYLES_FILE_NAME);
-    if (stylesCssUrl) {
+    if (stylesCssUrl && isSameOrigin(endpoint, stylesCssUrl)) {
       return {
         manifestUrl,
         mainJsUrl,
@@ -339,7 +500,9 @@ var PluginLoaderPlugin = class extends import_obsidian.Plugin {
   }
   async readInstalledManifest(pluginId) {
     const adapter = this.app.vault.adapter;
-    const manifestPath = (0, import_obsidian.normalizePath)(`${this.app.vault.configDir}/plugins/${pluginId}/manifest.json`);
+    const manifestPath = (0, import_obsidian.normalizePath)(
+      `${this.app.vault.configDir}/plugins/${pluginId}/manifest.json`
+    );
     if (!await adapter.exists(manifestPath)) {
       return null;
     }
@@ -350,44 +513,20 @@ var PluginLoaderPlugin = class extends import_obsidian.Plugin {
     const adapter = this.app.vault.adapter;
     const pluginDir = (0, import_obsidian.normalizePath)(`${this.app.vault.configDir}/plugins/${pluginId}`);
     await ensureDirectory(adapter, pluginDir);
-    await adapter.write((0, import_obsidian.normalizePath)(`${pluginDir}/manifest.json`), JSON.stringify(remote.manifest, null, 2));
-    await adapter.write((0, import_obsidian.normalizePath)(`${pluginDir}/main.js`), remote.mainJs);
-    if (remote.stylesCss?.length) {
-      await adapter.write((0, import_obsidian.normalizePath)(`${pluginDir}/styles.css`), remote.stylesCss);
-    }
+    const files = {
+      manifest: (0, import_obsidian.normalizePath)(`${pluginDir}/manifest.json`),
+      main: (0, import_obsidian.normalizePath)(`${pluginDir}/main.js`),
+      styles: (0, import_obsidian.normalizePath)(`${pluginDir}/styles.css`)
+    };
+    const contents = {
+      manifest: JSON.stringify(remote.manifest, null, 2),
+      main: remote.mainJs,
+      ...remote.stylesCss !== void 0 ? { styles: remote.stylesCss } : {}
+    };
+    await writePluginFilesWithRollback(adapter, files, contents);
   }
   async applyInstalledPluginState(pluginId) {
-    if (this.settings.autoReloadAfterInstall) {
-      const reloaded = await this.tryReloadPlugin(pluginId);
-      if (reloaded) {
-        return;
-      }
-    }
     await this.tryEnablePlugin(pluginId);
-  }
-  async tryReloadPlugin(pluginId) {
-    const pluginsApi = this.app.plugins;
-    if (!pluginsApi) {
-      return false;
-    }
-    const wasEnabled = pluginsApi.enabledPlugins instanceof Set && pluginsApi.enabledPlugins.has(pluginId);
-    if (!wasEnabled) {
-      return false;
-    }
-    try {
-      if (pluginsApi.disablePluginAndSave && pluginsApi.enablePluginAndSave) {
-        await pluginsApi.disablePluginAndSave(pluginId);
-        await pluginsApi.enablePluginAndSave(pluginId);
-        return true;
-      }
-      if (pluginsApi.unloadPlugin && pluginsApi.loadPlugin) {
-        await pluginsApi.unloadPlugin(pluginId);
-        await pluginsApi.loadPlugin(pluginId);
-        return true;
-      }
-    } catch {
-    }
-    return false;
   }
   async tryEnablePlugin(pluginId) {
     const pluginsApi = this.app.plugins;
@@ -406,6 +545,13 @@ var PluginLoaderPlugin = class extends import_obsidian.Plugin {
     }
   }
 };
+function isSameOrigin(left, right) {
+  try {
+    return new URL(left).origin === new URL(right).origin;
+  } catch {
+    return false;
+  }
+}
 var PluginLoaderSettingsTab = class extends import_obsidian.PluginSettingTab {
   constructor(app, plugin) {
     super(app, plugin);
@@ -416,10 +562,7 @@ var PluginLoaderSettingsTab = class extends import_obsidian.PluginSettingTab {
     containerEl.empty();
     containerEl.createEl("h2", { text: "Dev Loader Updater" });
     containerEl.createEl("p", {
-      text: "Add two verified release URLs for a private plugin: one local network URL and one Tailscale URL."
-    });
-    containerEl.createEl("p", {
-      text: "The loader reads the manifest, detects the plugin id automatically, and tries whichever verified URL works first."
+      text: "Install and update plugins from self-hosted release URLs. Add one URL per line; they are tried in order."
     });
     containerEl.createEl("h3", { text: "Behavior" });
     new import_obsidian.Setting(containerEl).setName("Check on startup").setDesc("Look for updates when Obsidian starts.").addToggle(
@@ -431,12 +574,6 @@ var PluginLoaderSettingsTab = class extends import_obsidian.PluginSettingTab {
     new import_obsidian.Setting(containerEl).setName("Auto-install updates").setDesc("Install newer versions automatically after startup checks.").addToggle(
       (toggle) => toggle.setValue(this.plugin.settings.autoInstallUpdates).onChange(async (value) => {
         this.plugin.settings.autoInstallUpdates = value;
-        await this.plugin.saveSettings();
-      })
-    );
-    new import_obsidian.Setting(containerEl).setName("Auto-reload after install/update").setDesc("If the target plugin is already enabled, try to reload it so new code applies immediately.").addToggle(
-      (toggle) => toggle.setValue(this.plugin.settings.autoReloadAfterInstall).onChange(async (value) => {
-        this.plugin.settings.autoReloadAfterInstall = value;
         await this.plugin.saveSettings();
       })
     );
@@ -453,7 +590,7 @@ var PluginLoaderSettingsTab = class extends import_obsidian.PluginSettingTab {
     containerEl.createEl("h3", { text: "Sources" });
     if (this.plugin.settings.sources.length === 0) {
       containerEl.createEl("p", {
-        text: "No sources yet. Add one and fill in the local network URL and/or Tailscale URL."
+        text: "No sources yet. Add a source and paste its release page or plugin directory URL."
       });
     }
     this.plugin.settings.sources.forEach((source) => {
@@ -461,7 +598,7 @@ var PluginLoaderSettingsTab = class extends import_obsidian.PluginSettingTab {
     });
     new import_obsidian.Setting(containerEl).setName("Add source").setDesc("Create a new source entry with the default simple fields.").addButton(
       (button) => button.setButtonText("Add").setCta().onClick(async () => {
-        this.plugin.settings.sources.push({ ...DEFAULT_SOURCE, id: createId() });
+        this.plugin.settings.sources.push(createDefaultSource());
         await this.plugin.saveSettings();
         this.display();
       })
@@ -469,9 +606,9 @@ var PluginLoaderSettingsTab = class extends import_obsidian.PluginSettingTab {
   }
   renderSourceCard(containerEl, source) {
     containerEl.createEl("h4", { text: getSourceHeading(source) });
-    if (!getLocalNetworkEndpoint(source) && !getTailscaleEndpoint(source)) {
+    if (source.endpoints.length === 0) {
       containerEl.createEl("p", {
-        text: "Required here: a local network URL, a Tailscale URL, or both. The plugin id is detected automatically."
+        text: "Add at least one release URL. The plugin id is detected from manifest.json."
       });
     }
     new import_obsidian.Setting(containerEl).setName("Enabled").setDesc("Use this source for checks and installs.").addToggle(
@@ -480,32 +617,44 @@ var PluginLoaderSettingsTab = class extends import_obsidian.PluginSettingTab {
         await this.plugin.saveSettings();
       })
     );
-    new import_obsidian.Setting(containerEl).setName("Detected plugin id").setDesc("Read from the remote manifest after the first successful test, check, or install.").addText(
+    new import_obsidian.Setting(containerEl).setName("Plugin id").setDesc("Detected from the remote manifest after a successful test, check, or install.").addText(
       (text) => text.setPlaceholder("Detected automatically").setValue(source.pluginId).setDisabled(true)
     );
-    new import_obsidian.Setting(containerEl).setName("Local network URL").setDesc("Verified path 1. Use the repository releases page URL on your local IP/LAN host.").addText(
-      (text) => text.setPlaceholder("http://192.168.x.x/.../releases").setValue(getLocalNetworkEndpoint(source)).onChange(async (value) => {
-        setVerifiedEndpoints(source, value, getTailscaleEndpoint(source));
+    new import_obsidian.Setting(containerEl).setName("Release URLs").setDesc(
+      "One URL per line, in priority order. Use a Gitea releases page or a directory containing manifest.json and main.js."
+    ).addTextArea((text) => {
+      text.inputEl.rows = Math.max(3, Math.min(6, source.endpoints.length + 1));
+      text.setPlaceholder(
+        "https://gitea.example/owner/repo/releases\nhttps://backup.example/plugin/"
+      ).setValue(source.endpoints.join("\n")).onChange(async (value) => {
+        source.endpoints = normalizeEndpointLines(value);
+        await this.plugin.saveSettings();
+      });
+    });
+    const authenticationDetails = containerEl.createEl("details");
+    authenticationDetails.createEl("summary", { text: "Authentication (optional)" });
+    new import_obsidian.Setting(authenticationDetails).setName("Gitea token").setDesc(
+      "Optional token for private Gitea releases. It is stored in this vault's plugin data."
+    ).addText(
+      (text) => text.setPlaceholder("Only needed for private repositories").setValue(source.authToken).onChange(async (value) => {
+        source.authToken = value.trim();
         await this.plugin.saveSettings();
       })
     );
-    new import_obsidian.Setting(containerEl).setName("Tailscale URL").setDesc("Verified path 2. Use the repository releases page URL exposed through your Tailscale address.").addText(
-      (text) => text.setPlaceholder("https://host.tailnet/.../releases").setValue(getTailscaleEndpoint(source)).onChange(async (value) => {
-        setVerifiedEndpoints(source, getLocalNetworkEndpoint(source), value);
-        await this.plugin.saveSettings();
-      })
-    );
-    new import_obsidian.Setting(containerEl).setName("Source actions").setDesc("Test the verified URLs, install now, or remove this source.").addButton(
+    authenticationDetails.querySelector("input")?.setAttribute("type", "password");
+    new import_obsidian.Setting(containerEl).setName("Source actions").setDesc("Test the configured URLs, install now, or remove this source.").addButton(
       (button) => button.setButtonText("Test").onClick(async () => {
         try {
           const remote = await this.plugin.testSourceConnectivity(source);
           new import_obsidian.Notice(
-            `Dev Loader Updater: ${getSourceDisplayName(source, remote.manifest)} reachable via ${remote.endpoint}`
+            `Dev Loader Updater: ${getSourceDisplayName(source, remote.manifest)} reachable via ${redactEndpoint(remote.endpoint)}`
           );
           this.display();
         } catch (error) {
           const reason = error instanceof Error ? error.message : String(error);
-          new import_obsidian.Notice(`Dev Loader Updater: test failed for ${getSourceDisplayName(source)} - ${reason}`);
+          new import_obsidian.Notice(
+            `Dev Loader Updater: test failed for ${getSourceDisplayName(source)} - ${reason}`
+          );
         }
       })
     ).addButton(
@@ -514,7 +663,9 @@ var PluginLoaderSettingsTab = class extends import_obsidian.PluginSettingTab {
       })
     ).addButton(
       (button) => button.setButtonText("Remove").onClick(async () => {
-        this.plugin.settings.sources = this.plugin.settings.sources.filter((entry) => entry.id !== source.id);
+        this.plugin.settings.sources = this.plugin.settings.sources.filter(
+          (entry) => entry.id !== source.id
+        );
         await this.plugin.saveSettings();
         this.display();
       })
@@ -558,7 +709,7 @@ var ConfirmInstallModal = class _ConfirmInstallModal extends import_obsidian.Mod
       text: `Remote version: ${this.remoteVersion}`
     });
     this.contentEl.createEl("p", {
-      text: `Selected endpoint: ${this.endpoint}`
+      text: `Selected endpoint: ${redactEndpoint(this.endpoint)}`
     });
     new import_obsidian.Setting(this.contentEl).addButton(
       (button) => button.setButtonText("Cancel").onClick(() => {
@@ -587,37 +738,6 @@ var ConfirmInstallModal = class _ConfirmInstallModal extends import_obsidian.Mod
     this.close();
   }
 };
-function parseManifest(manifestText, expectedPluginId) {
-  const parsed = JSON.parse(manifestText);
-  if (!parsed.id) {
-    throw new Error("manifest is missing id");
-  }
-  if (expectedPluginId && parsed.id !== expectedPluginId) {
-    throw new Error(`manifest id ${parsed.id} does not match configured plugin id ${expectedPluginId}`);
-  }
-  return parsed;
-}
-function deriveGiteaLatestReleaseApiUrl(endpoint) {
-  let parsed;
-  try {
-    parsed = new URL(endpoint);
-  } catch {
-    return null;
-  }
-  const pathSegments = parsed.pathname.split("/").filter(Boolean);
-  const releaseIndex = pathSegments.lastIndexOf("releases");
-  if (releaseIndex < 2) {
-    return null;
-  }
-  const owner = pathSegments[releaseIndex - 2];
-  const repo = pathSegments[releaseIndex - 1];
-  if (!owner || !repo) {
-    return null;
-  }
-  const prefixSegments = pathSegments.slice(0, releaseIndex - 2);
-  const prefixPath = prefixSegments.length > 0 ? `/${prefixSegments.join("/")}` : "";
-  return `${parsed.origin}${prefixPath}/api/v1/repos/${owner}/${repo}/releases/latest`;
-}
 async function ensureDirectory(adapter, fullPath) {
   const parts = fullPath.split("/").filter(Boolean);
   let current = "";
@@ -627,27 +747,5 @@ async function ensureDirectory(adapter, fullPath) {
       await adapter.mkdir(current);
     }
   }
-}
-function compareVersions(left, right) {
-  const leftParts = sanitizeVersion(left);
-  const rightParts = sanitizeVersion(right);
-  const maxLength = Math.max(leftParts.length, rightParts.length);
-  for (let index = 0; index < maxLength; index += 1) {
-    const leftPart = leftParts[index] ?? 0;
-    const rightPart = rightParts[index] ?? 0;
-    if (leftPart > rightPart) {
-      return 1;
-    }
-    if (leftPart < rightPart) {
-      return -1;
-    }
-  }
-  return 0;
-}
-function sanitizeVersion(version) {
-  return version.replace(/^[^\d]*/, "").split(/[^\d]+/).filter(Boolean).map((segment) => Number.parseInt(segment, 10)).map((value) => Number.isFinite(value) ? value : 0);
-}
-function createId() {
-  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
 }
 //# sourceMappingURL=main.js.map

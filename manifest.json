@@ -1,9 +1,9 @@
 {
     "id":  "dev-loader-updater",
     "name":  "Dev Loader Updater",
-    "version":  "0.1.8",
+    "version":  "0.1.9",
     "minAppVersion":  "1.5.0",
-    "description":  "Install and update private development plugins from user-defined endpoints with fallback transport support.",
+    "description":  "Install and update Obsidian plugins from self-hosted release URLs with ordered fallback sources.",
     "author":  "AF",
     "authorUrl":  "",
     "isDesktopOnly":  false
