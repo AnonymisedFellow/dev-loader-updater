@@ -20,6 +20,7 @@ var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: tru
 // src/main.ts
 var main_exports = {};
 __export(main_exports, {
+  PluginLoaderSettingsTab: () => PluginLoaderSettingsTab,
   default: () => PluginLoaderPlugin
 });
 module.exports = __toCommonJS(main_exports);
@@ -560,90 +561,93 @@ var PluginLoaderSettingsTab = class extends import_obsidian.PluginSettingTab {
   display() {
     const { containerEl } = this;
     containerEl.empty();
-    containerEl.createEl("h2", { text: "Dev Loader Updater" });
-    containerEl.createEl("p", {
-      text: "Install and update plugins from self-hosted release URLs. Add one URL per line; they are tried in order."
-    });
-    containerEl.createEl("h3", { text: "Behavior" });
-    new import_obsidian.Setting(containerEl).setName("Check on startup").setDesc("Look for updates when Obsidian starts.").addToggle(
-      (toggle) => toggle.setValue(this.plugin.settings.checkOnStartup).onChange(async (value) => {
+    new import_obsidian.Setting(containerEl).setName("Dev Loader Updater").setDesc("Private plugin sources and ordered fallbacks.").setHeading();
+    new import_obsidian.Setting(containerEl).setName("Check on startup").setDesc("Look for updates when Obsidian starts.").addToggle((toggle) => {
+      toggle.setValue(this.plugin.settings.checkOnStartup);
+      toggle.onChange(async (value) => {
         this.plugin.settings.checkOnStartup = value;
         await this.plugin.saveSettings();
-      })
-    );
-    new import_obsidian.Setting(containerEl).setName("Auto-install updates").setDesc("Install newer versions automatically after startup checks.").addToggle(
-      (toggle) => toggle.setValue(this.plugin.settings.autoInstallUpdates).onChange(async (value) => {
+      });
+    });
+    new import_obsidian.Setting(containerEl).setName("Auto-install updates").setDesc("Install newer versions after startup checks.").addToggle((toggle) => {
+      toggle.setValue(this.plugin.settings.autoInstallUpdates);
+      toggle.onChange(async (value) => {
         this.plugin.settings.autoInstallUpdates = value;
         await this.plugin.saveSettings();
-      })
-    );
-    containerEl.createEl("h3", { text: "Actions" });
-    new import_obsidian.Setting(containerEl).setName("Run across all enabled sources").setDesc("Check for updates or install now.").addButton(
-      (button) => button.setButtonText("Check").onClick(async () => {
-        await this.plugin.checkForUpdates(false);
-      })
-    ).addButton(
-      (button) => button.setButtonText("Install/Update").setCta().onClick(async () => {
-        await this.plugin.installOrUpdateAll(true);
-      })
-    );
-    containerEl.createEl("h3", { text: "Sources" });
-    if (this.plugin.settings.sources.length === 0) {
-      containerEl.createEl("p", {
-        text: "No sources yet. Add a source and paste its release page or plugin directory URL."
       });
+    });
+    new import_obsidian.Setting(containerEl).setName("Actions").setHeading();
+    new import_obsidian.Setting(containerEl).setName("All enabled sources").addButton((button) => {
+      button.setButtonText("Check");
+      button.onClick(async () => {
+        await this.plugin.checkForUpdates(false);
+      });
+    }).addButton((button) => {
+      button.setButtonText("Install/Update");
+      button.setCta();
+      button.onClick(async () => {
+        await this.plugin.installOrUpdateAll(true);
+      });
+    });
+    new import_obsidian.Setting(containerEl).setName("Sources").setHeading();
+    if (this.plugin.settings.sources.length === 0) {
+      new import_obsidian.Setting(containerEl).setName("No sources configured").setDesc("Add a release page or plugin directory URL below.");
     }
     this.plugin.settings.sources.forEach((source) => {
       this.renderSourceCard(containerEl, source);
     });
-    new import_obsidian.Setting(containerEl).setName("Add source").setDesc("Create a new source entry with the default simple fields.").addButton(
-      (button) => button.setButtonText("Add").setCta().onClick(async () => {
+    new import_obsidian.Setting(containerEl).setName("Add source").addButton((button) => {
+      button.setButtonText("Add");
+      button.setCta();
+      button.onClick(async () => {
         this.plugin.settings.sources.push(createDefaultSource());
         await this.plugin.saveSettings();
         this.display();
-      })
-    );
+      });
+    });
   }
   renderSourceCard(containerEl, source) {
-    containerEl.createEl("h4", { text: getSourceHeading(source) });
-    if (source.endpoints.length === 0) {
-      containerEl.createEl("p", {
-        text: "Add at least one release URL. The plugin id is detected from manifest.json."
+    const heading = new import_obsidian.Setting(containerEl).setName(getSourceHeading(source)).setDesc(
+      source.pluginId ? `Plugin ID: ${source.pluginId}` : "Plugin ID is detected after testing."
+    ).setHeading();
+    heading.addExtraButton((button) => {
+      button.setIcon("trash");
+      button.setTooltip("Remove source");
+      button.onClick(async () => {
+        this.plugin.settings.sources = this.plugin.settings.sources.filter(
+          (entry) => entry.id !== source.id
+        );
+        await this.plugin.saveSettings();
+        this.display();
       });
-    }
-    new import_obsidian.Setting(containerEl).setName("Enabled").setDesc("Use this source for checks and installs.").addToggle(
-      (toggle) => toggle.setValue(source.enabled).onChange(async (value) => {
+    });
+    new import_obsidian.Setting(containerEl).setName("Enabled").addToggle((toggle) => {
+      toggle.setValue(source.enabled);
+      toggle.onChange(async (value) => {
         source.enabled = value;
         await this.plugin.saveSettings();
-      })
-    );
-    new import_obsidian.Setting(containerEl).setName("Plugin id").setDesc("Detected from the remote manifest after a successful test, check, or install.").addText(
-      (text) => text.setPlaceholder("Detected automatically").setValue(source.pluginId).setDisabled(true)
-    );
-    new import_obsidian.Setting(containerEl).setName("Release URLs").setDesc(
-      "One URL per line, in priority order. Use a Gitea releases page or a directory containing manifest.json and main.js."
-    ).addTextArea((text) => {
-      text.inputEl.rows = Math.max(3, Math.min(6, source.endpoints.length + 1));
-      text.setPlaceholder(
-        "https://gitea.example/owner/repo/releases\nhttps://backup.example/plugin/"
-      ).setValue(source.endpoints.join("\n")).onChange(async (value) => {
+      });
+    });
+    new import_obsidian.Setting(containerEl).setName("Release URLs").setDesc("One per line, in priority order. Gitea release page or plugin directory.").addTextArea((text) => {
+      text.setPlaceholder("https://gitea.example/owner/repo/releases");
+      text.setValue(source.endpoints.join("\n"));
+      text.onChange(async (value) => {
         source.endpoints = normalizeEndpointLines(value);
         await this.plugin.saveSettings();
       });
     });
-    const authenticationDetails = containerEl.createEl("details");
-    authenticationDetails.createEl("summary", { text: "Authentication (optional)" });
-    new import_obsidian.Setting(authenticationDetails).setName("Gitea token").setDesc(
-      "Optional token for private Gitea releases. It is stored in this vault's plugin data."
-    ).addText(
-      (text) => text.setPlaceholder("Only needed for private repositories").setValue(source.authToken).onChange(async (value) => {
+    new import_obsidian.Setting(containerEl).setName("Gitea token").setDesc("Optional for private Gitea releases; stored in plugin data.").addText((text) => {
+      text.inputEl.type = "password";
+      text.setPlaceholder("Optional");
+      text.setValue(source.authToken);
+      text.onChange(async (value) => {
         source.authToken = value.trim();
         await this.plugin.saveSettings();
-      })
-    );
-    authenticationDetails.querySelector("input")?.setAttribute("type", "password");
-    new import_obsidian.Setting(containerEl).setName("Source actions").setDesc("Test the configured URLs, install now, or remove this source.").addButton(
-      (button) => button.setButtonText("Test").onClick(async () => {
+      });
+    });
+    new import_obsidian.Setting(containerEl).setName("Source actions").addButton((button) => {
+      button.setButtonText("Test");
+      button.onClick(async () => {
         try {
           const remote = await this.plugin.testSourceConnectivity(source);
           new import_obsidian.Notice(
@@ -656,20 +660,14 @@ var PluginLoaderSettingsTab = class extends import_obsidian.PluginSettingTab {
             `Dev Loader Updater: test failed for ${getSourceDisplayName(source)} - ${reason}`
           );
         }
-      })
-    ).addButton(
-      (button) => button.setButtonText("Install/Update").setCta().onClick(async () => {
+      });
+    }).addButton((button) => {
+      button.setButtonText("Install/Update");
+      button.setCta();
+      button.onClick(async () => {
         await this.plugin.installOrUpdateSource(source, true);
-      })
-    ).addButton(
-      (button) => button.setButtonText("Remove").onClick(async () => {
-        this.plugin.settings.sources = this.plugin.settings.sources.filter(
-          (entry) => entry.id !== source.id
-        );
-        await this.plugin.saveSettings();
-        this.display();
-      })
-    );
+      });
+    });
   }
 };
 var ConfirmInstallModal = class _ConfirmInstallModal extends import_obsidian.Modal {
@@ -698,28 +696,22 @@ var ConfirmInstallModal = class _ConfirmInstallModal extends import_obsidian.Mod
   }
   onOpen() {
     this.contentEl.empty();
-    this.contentEl.createEl("h2", { text: "Confirm plugin install/update" });
-    this.contentEl.createEl("p", {
-      text: `${this.sourceName} (${this.pluginId})`
-    });
-    this.contentEl.createEl("p", {
-      text: `Current version: ${this.localVersion}`
-    });
-    this.contentEl.createEl("p", {
-      text: `Remote version: ${this.remoteVersion}`
-    });
-    this.contentEl.createEl("p", {
-      text: `Selected endpoint: ${redactEndpoint(this.endpoint)}`
-    });
-    new import_obsidian.Setting(this.contentEl).addButton(
-      (button) => button.setButtonText("Cancel").onClick(() => {
+    new import_obsidian.Setting(this.contentEl).setName("Confirm plugin install/update").setDesc(`${this.sourceName} (${this.pluginId})`).setHeading();
+    new import_obsidian.Setting(this.contentEl).setName("Current version").setDesc(this.localVersion);
+    new import_obsidian.Setting(this.contentEl).setName("Remote version").setDesc(this.remoteVersion);
+    new import_obsidian.Setting(this.contentEl).setName("Selected endpoint").setDesc(redactEndpoint(this.endpoint));
+    new import_obsidian.Setting(this.contentEl).addButton((button) => {
+      button.setButtonText("Cancel");
+      button.onClick(() => {
         this.closeWithValue(false);
-      })
-    ).addButton(
-      (button) => button.setButtonText("Install").setCta().onClick(() => {
+      });
+    }).addButton((button) => {
+      button.setButtonText("Install");
+      button.setCta();
+      button.onClick(() => {
         this.closeWithValue(true);
-      })
-    );
+      });
+    });
   }
   onClose() {
     this.contentEl.empty();
@@ -748,4 +740,8 @@ async function ensureDirectory(adapter, fullPath) {
     }
   }
 }
+// Annotate the CommonJS export names for ESM import in node:
+0 && (module.exports = {
+  PluginLoaderSettingsTab
+});
 //# sourceMappingURL=main.js.map
